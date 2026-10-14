@@ -111,6 +111,14 @@ void AnticheatMgr::StartHackDetection(Player* player, MovementInfo movementInfo,
 
     ObjectGuid key = player->GetGUID();
 
+    {
+        std::unique_lock<std::shared_mutex> lock(m_PlayersMutex);
+        m_Players.try_emplace(key);
+    }
+    // Shared for the rest: detectors assume the entry exists, and no
+    // writer can interleave while held. Never take unique under this.
+    std::shared_lock<std::shared_mutex> lock(m_PlayersMutex);
+
     if (player->IsInFlight() || player->GetTransport() || player->GetVehicle())
     {
         m_Players[key].SetLastInformations(movementInfo, opcode, player->GetMapId(), GetPlayerCurrentSpeedRate(player));
@@ -1538,10 +1546,16 @@ void AnticheatMgr::HandlePlayerLogin(Player* player)
     // we must delete this to prevent errors in case of crash
     CharacterDatabase.Execute("DELETE FROM `players_reports_status` WHERE `guid` = {}", player->GetGUID().GetCounter());
     // we initialize the pos of lastMovementPosition var.
-    m_Players[player->GetGUID()].SetPosition(player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), player->GetOrientation(), player->GetMapId());
+    {
+        std::unique_lock<std::shared_mutex> lock(m_PlayersMutex);
+        m_Players[player->GetGUID()].SetPosition(player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), player->GetOrientation(), player->GetMapId());
+    }
 
     if (CharacterDatabase.Query("SELECT 0 FROM `daily_players_reports` WHERE `guid` = {};", player->GetGUID().GetCounter()))
+    {
+        std::unique_lock<std::shared_mutex> lock(m_PlayersMutex);
         m_Players[player->GetGUID()].SetDailyReportState(true);
+    }
 }
 
 void AnticheatMgr::HandlePlayerLogout(Player* player)
@@ -1551,11 +1565,15 @@ void AnticheatMgr::HandlePlayerLogout(Player* player)
     // We must also delete it at logout to prevent have data of offline players in the db when we query the database (IE: The GM Command)
     CharacterDatabase.Execute("DELETE FROM `players_reports_status` WHERE `guid` = {}", player->GetGUID().GetCounter());
     // Delete not needed data from the memory.
-    m_Players.erase(player->GetGUID());
+    {
+        std::unique_lock<std::shared_mutex> lock(m_PlayersMutex);
+        m_Players.erase(player->GetGUID());
+    }
 }
 
 void AnticheatMgr::AckUpdate(Player* player, uint32 diff)
 {
+    std::shared_lock<std::shared_mutex> lock(m_PlayersMutex);
     if (_updateCheckTimer <= diff)
     {
         DoActions(player);
@@ -1614,30 +1632,50 @@ void AnticheatMgr::CheckForOrderAck(uint32 opcode)
 
 void AnticheatMgr::SavePlayerData(Player* player)
 {
-    AnticheatData playerData = m_Players[player->GetGUID()];
+    AnticheatData playerData;
+    {
+        std::shared_lock<std::shared_mutex> lock(m_PlayersMutex);
+        auto itr = m_Players.find(player->GetGUID());
+        if (itr == m_Players.end())
+            return;
+        playerData = itr->second;
+    }
     //                                                               1       2         3            4           5            6                 7                     8             9               10              11                   12           13              14               15                     16                     17                 18                        19
     CharacterDatabase.Execute("REPLACE INTO players_reports_status (guid,average,total_reports,speed_reports,fly_reports,jump_reports,waterwalk_reports,teleportplane_reports,climb_reports,teleport_reports,ignorecontrol_reports,zaxis_reports,antiswim_reports,gravity_reports,antiknockback_reports,no_fall_damage_reports,op_ack_hack_reports,counter_measures_reports, creation_time) VALUES ({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{});", player->GetGUID().GetCounter(), playerData.GetAverage(), playerData.GetTotalReports(), playerData.GetTypeReports(SPEED_HACK_REPORT), playerData.GetTypeReports(FLY_HACK_REPORT), playerData.GetTypeReports(JUMP_HACK_REPORT), playerData.GetTypeReports(WALK_WATER_HACK_REPORT), playerData.GetTypeReports(TELEPORT_PLANE_HACK_REPORT), playerData.GetTypeReports(CLIMB_HACK_REPORT), playerData.GetTypeReports(TELEPORT_HACK_REPORT), playerData.GetTypeReports(IGNORE_CONTROL_REPORT), playerData.GetTypeReports(ZAXIS_HACK_REPORT), playerData.GetTypeReports(ANTISWIM_HACK_REPORT), playerData.GetTypeReports(GRAVITY_HACK_REPORT), playerData.GetTypeReports(ANTIKNOCK_BACK_HACK_REPORT), playerData.GetTypeReports(NO_FALL_DAMAGE_HACK_REPORT), playerData.GetTypeReports(OP_ACK_HACK_REPORT), playerData.GetTypeReports(COUNTER_MEASURES_REPORT), playerData.GetCreationTime());
 }
 
 void AnticheatMgr::SavePlayerDataDaily(Player* player)
 {
-    AnticheatData playerData = m_Players[player->GetGUID()];
+    AnticheatData playerData;
+    {
+        std::shared_lock<std::shared_mutex> lock(m_PlayersMutex);
+        auto itr = m_Players.find(player->GetGUID());
+        if (itr == m_Players.end())
+            return;
+        playerData = itr->second;
+    }
     //                                                               1       2         3            4           5            6                 7                     8             9               10              11                   12           13              14               15                     16                     17                 18                        19
     CharacterDatabase.Execute("REPLACE INTO players_reports_status (guid,average,total_reports,speed_reports,fly_reports,jump_reports,waterwalk_reports,teleportplane_reports,climb_reports,teleport_reports,ignorecontrol_reports,zaxis_reports,antiswim_reports,gravity_reports,antiknockback_reports,no_fall_damage_reports,op_ack_hack_reports,counter_measures_reports, creation_time) VALUES ({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{});", player->GetGUID().GetCounter(), playerData.GetAverage(), playerData.GetTotalReports(), playerData.GetTypeReports(SPEED_HACK_REPORT), playerData.GetTypeReports(FLY_HACK_REPORT), playerData.GetTypeReports(JUMP_HACK_REPORT), playerData.GetTypeReports(WALK_WATER_HACK_REPORT), playerData.GetTypeReports(TELEPORT_PLANE_HACK_REPORT), playerData.GetTypeReports(CLIMB_HACK_REPORT), playerData.GetTypeReports(TELEPORT_HACK_REPORT), playerData.GetTypeReports(IGNORE_CONTROL_REPORT), playerData.GetTypeReports(ZAXIS_HACK_REPORT), playerData.GetTypeReports(ANTISWIM_HACK_REPORT), playerData.GetTypeReports(GRAVITY_HACK_REPORT), playerData.GetTypeReports(ANTIKNOCK_BACK_HACK_REPORT), playerData.GetTypeReports(NO_FALL_DAMAGE_HACK_REPORT), playerData.GetTypeReports(OP_ACK_HACK_REPORT), playerData.GetTypeReports(COUNTER_MEASURES_REPORT), playerData.GetCreationTime());
 }
 uint32 AnticheatMgr::GetTotalReports(ObjectGuid guid)
 {
-    return m_Players[guid].GetTotalReports();
+    std::shared_lock<std::shared_mutex> lock(m_PlayersMutex);
+    auto itr = m_Players.find(guid);
+    return itr != m_Players.end() ? itr->second.GetTotalReports() : 0;
 }
 
 float AnticheatMgr::GetAverage(ObjectGuid guid)
 {
-    return m_Players[guid].GetAverage();
+    std::shared_lock<std::shared_mutex> lock(m_PlayersMutex);
+    auto itr = m_Players.find(guid);
+    return itr != m_Players.end() ? itr->second.GetAverage() : 0.0f;
 }
 
 uint32 AnticheatMgr::GetTypeReports(ObjectGuid guid, ReportTypes type)
 {
-    return m_Players[guid].GetTypeReports(type);
+    std::shared_lock<std::shared_mutex> lock(m_PlayersMutex);
+    auto itr = m_Players.find(guid);
+    return itr != m_Players.end() ? itr->second.GetTypeReports(type) : 0;
 }
 
 bool AnticheatMgr::MustCheckTempReports(ReportTypes type)
@@ -1847,6 +1885,7 @@ void AnticheatMgr::AnticheatGlobalCommand(ChatHandler* handler)
 
 void AnticheatMgr::AnticheatDeleteCommand(ObjectGuid guid)
 {
+    std::unique_lock<std::shared_mutex> lock(m_PlayersMutex);
     if (!guid)
     {
         for (AnticheatPlayersDataMap::iterator it = m_Players.begin(); it != m_Players.end(); ++it)
@@ -1885,6 +1924,7 @@ void AnticheatMgr::AnticheatPurgeCommand(ChatHandler* /*handler*/)
 
 void AnticheatMgr::ResetDailyReportStates()
 {
+    std::unique_lock<std::shared_mutex> lock(m_PlayersMutex);
     for (AnticheatPlayersDataMap::iterator it = m_Players.begin(); it != m_Players.end(); ++it)
         m_Players[(*it).first].SetDailyReportState(false);
 }

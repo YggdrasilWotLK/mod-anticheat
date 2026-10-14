@@ -32,6 +32,8 @@
 #include "Chat.h"
 #include "ObjectGuid.h"
 #include "EventEmitter.h"
+#include <atomic>
+#include <shared_mutex>
 
 class Player;
 class AnticheatData;
@@ -143,10 +145,13 @@ class AnticheatMgr
         [[nodiscard]] uint32 GetTeleportSkillCooldownDurationInMS(Player* player) const;
         [[nodiscard]] float GetTeleportSkillDistanceInYards(Player* player) const;
         [[nodiscard]] float GetPlayerCurrentSpeedRate(Player* player) const;
-        uint32 _updateCheckTimer = 4000;
+        std::atomic<uint32> _updateCheckTimer = 4000;
         std::array<Position, PVP_TEAMS_COUNT> _startPosition;
         Position const* GetTeamStartPosition(TeamId teamId) const;
         AnticheatPlayersDataMap m_Players;                        ///< Player data
+        // Guards m_Players. Readers (movement/map threads) take shared_lock;
+        // writers (login/logout/reset) take unique_lock. Leaf-only, never nest.
+        mutable std::shared_mutex m_PlayersMutex;
 };
 
 #define sAnticheatMgr AnticheatMgr::instance()
